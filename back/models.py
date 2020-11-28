@@ -7,6 +7,9 @@ class Profile(models.Model):
 	user = models.OneToOneField(User, on_delete = models.CASCADE)
 	points = models.DecimalField(max_digits=7, decimal_places=0, default = 0)
 
+	def __str__(self):
+		return(f'{self.user.username} - {self.user.email}')
+
 @receiver(post_save, sender = User)
 def create_profile(sender, instance, created, **kwargs):
 	if(created):

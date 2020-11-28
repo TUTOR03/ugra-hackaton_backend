@@ -11,3 +11,18 @@ class UserRegisterSerializer(serializers.ModelSerializer):
 			'password',
 			'email'
 		]
+
+class UserResetPasswordSerializer(serializers.ModelSerializer):
+	email = serializers.EmailField(required=True)
+	class Meta:
+		model = User
+		fields = [
+			'email'
+		]
+
+class UserPasswordSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = User
+		fields = [
+			'password'
+		]

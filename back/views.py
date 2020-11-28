@@ -10,8 +10,9 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.template.loader import render_to_string
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.core.mail import EmailMultiAlternatives
-from .serializers import UserRegisterSerializer
+from .serializers import UserRegisterSerializer, UserResetPasswordSerializer, UserPasswordSerializer
 from django.utils.html import strip_tags
+from django.contrib.auth.password_validation import validate_password
 import six
 import threading
 
@@ -20,6 +21,7 @@ class EmailTokenGenerator(PasswordResetTokenGenerator):
 		return(six.text_type(user.pk) + six.text_type(timestamp) + six.text_type(user.is_active))
 
 email_token_gen = EmailTokenGenerator()
+password_token_gen = PasswordResetTokenGenerator()
 
 @api_view(['POST'])
 @permission_classes([~permissions.IsAuthenticated])
@@ -27,8 +29,12 @@ def UserRegisterAPIView(request):
 	serializer = UserRegisterSerializer(data = request.data)
 	if(serializer.is_valid()):
 		data = serializer.validated_data
-		if(User.objects.filter(username = data['username']).exists()):
+		if(User.objects.filter(username = data['username']).exists() or User.objects.filter(email = data['email']).exists()):
 			return Response({'ok':False, 'error':'User already exists'}, status = status.HTTP_400_BAD_REQUEST)
+		try:
+			validate_password(data['password'])
+		except Exception as errors:
+			return Response({'ok':False, 'error':errors} ,status = status.HTTP_400_BAD_REQUEST)
 		user = User.objects.create(username = data['username'], email = data['email'], is_active = False)
 		user.set_password(data['password'])
 		user.save()
@@ -52,11 +58,56 @@ def UserActivationAPIView(request, uidb64, token):
 	user = User.objects.filter(id = uid)
 	if(user.exists()):
 		user = user.first()
-		if(email_token_gen.check_token(user, token) and not user.is_active):
+		if(email_token_gen.check_token(user, token)):
 			user.is_active = True
 			user.save()
 			return Response({'ok':True}, status = status.HTTP_200_OK)
 	return Response({'ok':False, 'error':'Invalid activation link'}, status = status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+@permission_classes([~permissions.IsAuthenticated])
+def UserResetPasswordRequestAPIView(request):
+	serializer = UserResetPasswordSerializer(data = request.data)
+	if(serializer.is_valid()):
+		data = serializer.validated_data
+		user = User.objects.filter(email = data['email'])
+		if(user.exists()):
+			user = user.first()
+			domain = get_current_site(request).domain
+			mail_subject = 'Password reset'
+			message = render_to_string('password_reset.html',{
+				'user':user,
+				'domain': domain,
+	            'uidb64': urlsafe_base64_encode(force_bytes(user.pk)),
+	            'token': password_token_gen.make_token(user),
+			})
+			message_task = threading.Thread(target = async_email_send, args=( mail_subject, message, [data['email']] ))
+			message_task.start()
+			return Response({'ok':True}, status = status.HTTP_200_OK)
+		return Response({'ok':False, 'error':'User does not exist'}, status = status.HTTP_400_BAD_REQUEST)
+	return Response({'ok':False, 'error':serializer.errors}, status = status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+@permission_classes([~permissions.IsAuthenticated])
+def UserResetPasswordAPIView(request, uidb64, token):
+	serializer = UserPasswordSerializer(data = request.data)
+	if(serializer.is_valid()):
+		data = serializer.validated_data
+		try:
+			validate_password(data['password'])
+		except Exception as errors:
+			return Response({'ok':False, 'error':errors} ,status = status.HTTP_400_BAD_REQUEST)
+		uid = force_text(urlsafe_base64_decode(uidb64))
+		user = User.objects.filter(id = uid)
+		if(user.exists()):
+			user = user.first()
+			if(password_token_gen.check_token(user, token)):
+				user.set_password(data['password'])
+				user.save()
+				return Response({'ok':True}, status = status.HTTP_200_OK)
+			return Response({'ok':False, 'error':'Invalid password reset link'} ,status = status.HTTP_400_BAD_REQUEST)
+		return Response({'ok':False, 'error':'User does not exist'} ,status = status.HTTP_400_BAD_REQUEST)
+	return Response({'ok':False, 'error':serializer.errors}, status = status.HTTP_400_BAD_REQUEST)
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
